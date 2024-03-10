@@ -645,6 +645,7 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
     uint64_t cmd_stime = (ncmd->stime == 0) ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : ncmd->stime;
     uint64_t nand_stime;
     uint64_t chnl_stime;
+    uint64_t chnl_etime;
     uint64_t rt_stime;
     struct ssdparams *spp = &ssd->sp;
     struct nand_lun *lun = get_lun(ssd, ppa);
@@ -662,7 +663,6 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
         lat = lun->next_lun_avail_time - cmd_stime;
 
 // #if 0
-        lun->next_lun_avail_time = nand_stime + spp->pg_rd_lat;
         chnl_stime = lun->next_lun_avail_time;
 
         /* read: then data transfer through channel */
@@ -671,11 +671,13 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
             chnl_stime = lun->next_lun_avail_time;
 
             ch->next_ch_avail_time = chnl_stime + spp->ch_xfer_lat;
-            lat = ch->next_ch_avail_time - cmd_stime;
+            chnl_etime = ch->next_ch_avail_time;
         } else {
             // if channel will be busy, execute route algorithm.
             rt_stime = chnl_stime;
             src_nchnl = -1;
+
+            // search a nearest free channel in two directions.
             for (lp_chnl = ppa->g.ch + 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
                 if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
                     src_nchnl = lp_chnl;
@@ -696,11 +698,13 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
                 src_chnl = ssd->ch[src_nchnl];
 
                 src_chnl->next_ch_avail_time = chnl_stime + get_route(src_nchnl, rt_stime, ssd, ppa, ncmd);
-                lat = src_chnl->next_ch_avail_time - cmd_stime;
+                chnl_etime = src_chnl->next_ch_avail_time;
             } else {
                 // TODO: if there is not a free channel found.
             }
         }
+
+        lat = chnl_etime - cmd_stime;
 // #endif
         break;
 
@@ -713,19 +717,54 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
         }
         lat = lun->next_lun_avail_time - cmd_stime;
 
-#if 0
+// #if 0
         /* write: transfer data through channel first */
-        chnl_stime = (ch->next_ch_avail_time < cmd_stime) ? cmd_stime : \
-                     ch->next_ch_avail_time;
-        ch->next_ch_avail_time = chnl_stime + spp->ch_xfer_lat;
+        chnl_stime = cmd_stime;
+        if (ch->next_ch_avail_time < chnl_stime) {
+            // if channel will be available, go directly.
+            chnl_stime = lun->next_lun_avail_time;
+
+            ch->next_ch_avail_time = chnl_stime + spp->ch_xfer_lat;
+            chnl_etime = ch->next_ch_avail_time;
+        } else {
+            // if channel will be busy, execute route algorithm.
+            rt_stime = chnl_stime;
+            src_nchnl = -1;
+            
+            // search a nearest free channel in two directions.
+            for (lp_chnl = ppa->g.ch + 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
+                if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
+                    src_nchnl = lp_chnl;
+                }
+            }
+
+            for (lp_chnl = ppa->g.ch - 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
+                if (src_nchnl != -1 && (ppa->g.ch - lp_chnl >= src_nchnl - ppa->g.ch)) {
+                    break;
+                }
+                if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
+                    src_nchnl = lp_chnl;
+                }
+            }
+
+            // found a free channel.
+            if (src_nchnl != -1) {
+                src_chnl = ssd->ch[src_nchnl];
+
+                src_chnl->next_ch_avail_time = chnl_stime + get_route(src_nchnl, rt_stime, ssd, ppa, ncmd);
+                chnl_etime = src_chnl->next_ch_avail_time;
+            } else {
+                // TODO: if there is not a free channel found.
+            }
+        }
 
         /* write: then do NAND program */
-        nand_stime = (lun->next_lun_avail_time < ch->next_ch_avail_time) ? \
-            ch->next_ch_avail_time : lun->next_lun_avail_time;
+        nand_stime = (lun->next_lun_avail_time < chnl_etime) ? \
+            chnl_etime : lun->next_lun_avail_time;
         lun->next_lun_avail_time = nand_stime + spp->pg_wr_lat;
 
         lat = lun->next_lun_avail_time - cmd_stime;
-#endif
+// #endif
         break;
 
     case NAND_ERASE:
