@@ -453,8 +453,8 @@ static int64_t search_route(uint64_t rt_stime, struct net_link **link, struct ne
     //
     int diff_x = ex - sx;
     int diff_y = ey - sy;
-    int64_t rt_lat = 1;     // total latency caused by routing of current chip.
-    int64_t lat;       // latency caused by single direction's routing of current chip.
+    int64_t rt_lat = 1;  // total latency caused by routing of current chip.
+    int64_t lat;         // latency caused by single direction's routing of current chip.
     bool is_right_searched, is_left_searched, is_up_searched, is_down_searched;
     bool found;
 
@@ -476,7 +476,7 @@ static int64_t search_route(uint64_t rt_stime, struct net_link **link, struct ne
     if (diff_x > 0 && is_right_link_free(rt_stime, link, np, sx, sy)) {
         // block the input link
         link[sx][sy + 1].next_link_avail_time = UINT64_MAX;
-        
+
         lat = search_route(rt_stime + np->link_xfer_lat, link, sx + 1, sy, ex, ey);
         if (lat >= 0) {
             found = true;
@@ -504,7 +504,7 @@ static int64_t search_route(uint64_t rt_stime, struct net_link **link, struct ne
         }
         is_left_searched = true;
     }
-    
+
     if (diff_y > 0 && is_up_link_free(rt_stime, link, np, sx, sy)) {
         link[sx - 1][sy].next_link_avail_time = UINT64_MAX;
         lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy - 1, ex, ey);
@@ -519,7 +519,7 @@ static int64_t search_route(uint64_t rt_stime, struct net_link **link, struct ne
         }
         is_up_searched = true;
     }
-    
+
     if (diff_y < 0 && is_down_link_free(rt_stime, link, np, sx, sy)) {
         link[sx + 1][sy].next_link_avail_time = UINT64_MAX;
         lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy + 1, ex, ey);
@@ -600,16 +600,14 @@ static int64_t search_route(uint64_t rt_stime, struct net_link **link, struct ne
     }
 }
 
-
 // @return the total latency of the route.
 // if the destination chip is not available, return nagative value.
-static uint64_t get_route(uint64_t ch, uint64_t rt_stime, struct ssd *ssd, struct ppa *ppa, struct nand_cmd *ncmd) {
+static int64_t get_route(uint64_t ch, uint64_t rt_stime, struct ssd *ssd, struct ppa *ppa, struct nand_cmd *ncmd) {
     int c = ncmd->cmd;
     int sx, sy, ex, ey;
     int64_t lat;
 
-    switch (c)
-    {
+    switch (c) {
     case NAND_READ:
         // direction: channel <- ppa
         sx = ppa->g.ch;
@@ -618,7 +616,7 @@ static uint64_t get_route(uint64_t ch, uint64_t rt_stime, struct ssd *ssd, struc
         ey = 0;
 
         break;
-    
+
     case NAND_WRITE:
         sx = ch;
         sy = 0;
@@ -634,7 +632,7 @@ static uint64_t get_route(uint64_t ch, uint64_t rt_stime, struct ssd *ssd, struc
     lat = search_route(rt_stime, ssd->link, ssd->np, sx, sy, ex, ey);
 
     if (lat < 0) {
-        return -lat - 1;
+        return lat + 1;
     } else {
         return lat;
     }
@@ -653,7 +651,9 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
     int src_nchnl;  // # of source channel of the link route
     struct ssd_channel *src_chnl;
     int lp_chnl;
+    bool is_rt_found;
     uint64_t lat = 0;
+    int64_t rt_lat;
 
     switch (c) {
     case NAND_READ:
@@ -662,50 +662,61 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
         lun->next_lun_avail_time = nand_stime + spp->pg_rd_lat;
         lat = lun->next_lun_avail_time - cmd_stime;
 
-// #if 0
+        // #if 0
         chnl_stime = lun->next_lun_avail_time;
+        while (!is_rt_found) {
+            /* read: then data transfer through channel */
+            if (ch->next_ch_avail_time < chnl_stime) {
+                // if channel will be available, go directly.
+                chnl_stime = lun->next_lun_avail_time;
 
-        /* read: then data transfer through channel */
-        if (ch->next_ch_avail_time < chnl_stime) {
-            // if channel will be available, go directly.
-            chnl_stime = lun->next_lun_avail_time;
-
-            ch->next_ch_avail_time = chnl_stime + spp->ch_xfer_lat;
-            chnl_etime = ch->next_ch_avail_time;
-        } else {
-            // if channel will be busy, execute route algorithm.
-            rt_stime = chnl_stime;
-            src_nchnl = -1;
-
-            // search a nearest free channel in two directions.
-            for (lp_chnl = ppa->g.ch + 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
-                if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
-                    src_nchnl = lp_chnl;
-                }
-            }
-
-            for (lp_chnl = ppa->g.ch - 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
-                if (src_nchnl != -1 && (ppa->g.ch - lp_chnl >= src_nchnl - ppa->g.ch)) {
-                    break;
-                }
-                if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
-                    src_nchnl = lp_chnl;
-                }
-            }
-
-            // found a free channel.
-            if (src_nchnl != -1) {
-                src_chnl = ssd->ch[src_nchnl];
-
-                src_chnl->next_ch_avail_time = chnl_stime + get_route(src_nchnl, rt_stime, ssd, ppa, ncmd);
-                chnl_etime = src_chnl->next_ch_avail_time;
+                ch->next_ch_avail_time = chnl_stime + spp->ch_xfer_lat;
+                chnl_etime = ch->next_ch_avail_time;
+                is_rt_found = true;
             } else {
-                // TODO: if there is not a free channel found.
+                // if channel will be busy, execute route algorithm.
+                rt_stime = chnl_stime;
+                src_nchnl = -1;
+
+                // search a nearest free channel in two directions.
+                for (lp_chnl = ppa->g.ch + 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
+                    if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
+                        src_nchnl = lp_chnl;
+                    }
+                }
+
+                for (lp_chnl = ppa->g.ch - 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
+                    if (src_nchnl != -1 && (ppa->g.ch - lp_chnl >= src_nchnl - ppa->g.ch)) {
+                        break;
+                    }
+                    if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
+                        src_nchnl = lp_chnl;
+                    }
+                }
+
+                // found a free channel.
+                if (src_nchnl != -1) {
+                    src_chnl = ssd->ch[src_nchnl];
+                    rt_lat = get_route(src_nchnl, rt_stime, ssd, ppa, ncmd);
+
+                    if (rt_lat >= 0) {
+                        is_rt_found = true;
+                        src_chnl->next_ch_avail_time = chnl_stime + rt_lat;
+                    } else {
+                        is_rt_found = false;
+                        src_chnl->next_ch_avail_time = chnl_stime - rt_lat;
+                    }
+
+                    chnl_etime = src_chnl->next_ch_avail_time;
+                } else {
+                    is_rt_found = true;
+                }
             }
+            chnl_stime = chnl_etime;
         }
 
         lat = chnl_etime - cmd_stime;
-// #endif
+        // #endif
         break;
 
     case NAND_WRITE:
@@ -717,54 +728,65 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
         }
         lat = lun->next_lun_avail_time - cmd_stime;
 
-// #if 0
+        // #if 0
         /* write: transfer data through channel first */
         chnl_stime = cmd_stime;
-        if (ch->next_ch_avail_time < chnl_stime) {
-            // if channel will be available, go directly.
-            chnl_stime = lun->next_lun_avail_time;
+        while (!is_rt_found) {
+            if (ch->next_ch_avail_time < chnl_stime) {
+                // if channel will be available, go directly.
+                chnl_stime = lun->next_lun_avail_time;
 
-            ch->next_ch_avail_time = chnl_stime + spp->ch_xfer_lat;
-            chnl_etime = ch->next_ch_avail_time;
-        } else {
-            // if channel will be busy, execute route algorithm.
-            rt_stime = chnl_stime;
-            src_nchnl = -1;
-            
-            // search a nearest free channel in two directions.
-            for (lp_chnl = ppa->g.ch + 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
-                if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
-                    src_nchnl = lp_chnl;
-                }
-            }
-
-            for (lp_chnl = ppa->g.ch - 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
-                if (src_nchnl != -1 && (ppa->g.ch - lp_chnl >= src_nchnl - ppa->g.ch)) {
-                    break;
-                }
-                if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
-                    src_nchnl = lp_chnl;
-                }
-            }
-
-            // found a free channel.
-            if (src_nchnl != -1) {
-                src_chnl = ssd->ch[src_nchnl];
-
-                src_chnl->next_ch_avail_time = chnl_stime + get_route(src_nchnl, rt_stime, ssd, ppa, ncmd);
-                chnl_etime = src_chnl->next_ch_avail_time;
+                ch->next_ch_avail_time = chnl_stime + spp->ch_xfer_lat;
+                chnl_etime = ch->next_ch_avail_time;
+                is_rt_found = true;
             } else {
-                // TODO: if there is not a free channel found.
+                // if channel will be busy, execute route algorithm.
+                rt_stime = chnl_stime;
+                src_nchnl = -1;
+
+                // search a nearest free channel in two directions.
+                for (lp_chnl = ppa->g.ch + 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
+                    if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
+                        src_nchnl = lp_chnl;
+                    }
+                }
+
+                for (lp_chnl = ppa->g.ch - 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
+                    if (src_nchnl != -1 && (ppa->g.ch - lp_chnl >= src_nchnl - ppa->g.ch)) {
+                        break;
+                    }
+                    if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
+                        src_nchnl = lp_chnl;
+                    }
+                }
+
+                // found a free channel.
+                if (src_nchnl != -1) {
+                    src_chnl = ssd->ch[src_nchnl];
+                    rt_lat = get_route(src_nchnl, rt_stime, ssd, ppa, ncmd);
+
+                    if (rt_lat >= 0) {
+                        is_rt_found = true;
+                        src_chnl->next_ch_avail_time = chnl_stime + rt_lat;
+                    } else {
+                        is_rt_found = false;
+                        src_chnl->next_ch_avail_time = chnl_stime - rt_lat;
+                    }
+
+                    chnl_etime = src_chnl->next_ch_avail_time;
+                } else {
+                    is_rt_found = false;
+                }
             }
+            chnl_stime = chnl_etime;
         }
 
         /* write: then do NAND program */
-        nand_stime = (lun->next_lun_avail_time < chnl_etime) ? \
-            chnl_etime : lun->next_lun_avail_time;
+        nand_stime = (lun->next_lun_avail_time < chnl_etime) ? chnl_etime : lun->next_lun_avail_time;
         lun->next_lun_avail_time = nand_stime + spp->pg_wr_lat;
 
         lat = lun->next_lun_avail_time - cmd_stime;
-// #endif
+        // #endif
         break;
 
     case NAND_ERASE:
