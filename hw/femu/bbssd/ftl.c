@@ -650,7 +650,7 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
     struct ssd_channel *ch = get_ch(ssd, ppa);
     int src_nchnl;  // # of source channel of the link route
     struct ssd_channel *src_chnl;
-    int lp_chnl;
+    int lp_nchnl;
     bool is_rt_found;
     uint64_t lat = 0;
     int64_t rt_lat;
@@ -668,8 +668,6 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
             /* read: then data transfer through channel */
             if (ch->next_ch_avail_time < chnl_stime) {
                 // if channel will be available, go directly.
-                chnl_stime = lun->next_lun_avail_time;
-
                 ch->next_ch_avail_time = chnl_stime + spp->ch_xfer_lat;
                 chnl_etime = ch->next_ch_avail_time;
                 is_rt_found = true;
@@ -679,18 +677,20 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
                 src_nchnl = -1;
 
                 // search a nearest free channel in two directions.
-                for (lp_chnl = ppa->g.ch + 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
-                    if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
-                        src_nchnl = lp_chnl;
+                for (lp_nchnl = ppa->g.ch + 1; lp_nchnl < ssd->sp.nchs; lp_nchnl++) {
+                    if (ssd->ch[lp_nchnl].next_ch_avail_time < chnl_stime) {
+                        src_nchnl = lp_nchnl;
+                        break;
                     }
                 }
 
-                for (lp_chnl = ppa->g.ch - 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
-                    if (src_nchnl != -1 && (ppa->g.ch - lp_chnl >= src_nchnl - ppa->g.ch)) {
+                for (lp_nchnl = ppa->g.ch - 1; lp_nchnl >= 0; lp_nchnl--) {
+                    if (src_nchnl != -1 && (ppa->g.ch - lp_nchnl >= src_nchnl - ppa->g.ch)) {
                         break;
                     }
-                    if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
-                        src_nchnl = lp_chnl;
+                    if (ssd->ch[lp_nchnl].next_ch_avail_time < chnl_stime) {
+                        src_nchnl = lp_nchnl;
+                        break;
                     }
                 }
 
@@ -709,7 +709,7 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
 
                     chnl_etime = src_chnl->next_ch_avail_time;
                 } else {
-                    is_rt_found = true;
+                    is_rt_found = false;
                 }
             }
             chnl_stime = chnl_etime;
@@ -734,8 +734,6 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
         while (!is_rt_found) {
             if (ch->next_ch_avail_time < chnl_stime) {
                 // if channel will be available, go directly.
-                chnl_stime = lun->next_lun_avail_time;
-
                 ch->next_ch_avail_time = chnl_stime + spp->ch_xfer_lat;
                 chnl_etime = ch->next_ch_avail_time;
                 is_rt_found = true;
@@ -745,18 +743,20 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
                 src_nchnl = -1;
 
                 // search a nearest free channel in two directions.
-                for (lp_chnl = ppa->g.ch + 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
-                    if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
-                        src_nchnl = lp_chnl;
+                for (lp_nchnl = ppa->g.ch + 1; lp_nchnl < ssd->sp.nchs; lp_nchnl++) {
+                    if (ssd->ch[lp_nchnl].next_ch_avail_time < chnl_stime) {
+                        src_nchnl = lp_nchnl;
+                        break;
                     }
                 }
 
-                for (lp_chnl = ppa->g.ch - 1; lp_chnl < ssd->sp.nchs; lp_chnl++) {
-                    if (src_nchnl != -1 && (ppa->g.ch - lp_chnl >= src_nchnl - ppa->g.ch)) {
+                for (lp_nchnl = ppa->g.ch - 1; lp_nchnl >= 0; lp_nchnl--) {
+                    if (src_nchnl != -1 && (ppa->g.ch - lp_nchnl >= src_nchnl - ppa->g.ch)) {
                         break;
                     }
-                    if (ssd->ch[lp_chnl].next_ch_avail_time < chnl_stime) {
-                        src_nchnl = lp_chnl;
+                    if (ssd->ch[lp_nchnl].next_ch_avail_time < chnl_stime) {
+                        src_nchnl = lp_nchnl;
+                        break;
                     }
                 }
 
