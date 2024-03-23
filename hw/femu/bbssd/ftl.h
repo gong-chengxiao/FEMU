@@ -18,6 +18,10 @@ enum {
 };
 
 enum {
+    ssdnet_LINK_XFER_LATENCY = 0,
+};
+
+enum {
     USER_IO = 0,
     GC_IO = 1,
 };
@@ -101,16 +105,16 @@ struct nand_lun {
 };
 
 // link that connects neighboring chips in both vertical and horizontal direction.
-struct net_link
+struct ssdnet_link
 {
     uint64_t next_link_avail_time;
 };
 
-struct net_params {
+struct ssdnet_params {
     int nrows;  // nrows = nch
     int ncols;  // nclos = luns_per_ch (0 is a virtual link col which connect chnnel controller to the first chip).
     int link_xfer_lat;
-}
+};
 
 struct ssd_channel {
     struct nand_lun *lun;
@@ -216,8 +220,8 @@ struct ssd {
     // size = nchs * luns_per_ch. 
     // vertical link for odd row, 
     // horizontal link for even row (0 is a virtual link which connect chnnel controller to the first chip).
-    struct net_link **link;
-    struct net_params *np;
+    struct ssdnet_link **link;
+    struct ssdnet_params np;
 
     struct ppa *maptbl; /* page level mapping table */
     uint64_t *rmap;     /* reverse mapptbl, assume it's stored in OOB */
