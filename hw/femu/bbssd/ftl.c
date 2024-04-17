@@ -1,6 +1,7 @@
 #include "ftl.h"
 
 // #define FEMU_DEBUG_FTL
+#define SSD_LINK
 
 static void *ftl_thread(void *arg);
 
@@ -332,10 +333,19 @@ static void ssd_init_rmap(struct ssd *ssd) {
     }
 }
 
-static void ssdnet_init_params(struct ssdnet_params* np, FemuCtrl *n) {
+static void ssdnet_init_params(struct ssdnet_params *np, FemuCtrl *n) {
     np->link_xfer_lat = n->bb_params.ssdnet_link_xfer_lat;
     np->ncols = n->bb_params.luns_per_ch;
     np->nrows = n->bb_params.nchs;
+}
+
+static void ssdnet_init_link(struct ssd *ssd) {
+    struct ssdnet_params *np = &ssd->np;
+
+    ssd->link = g_malloc0(sizeof(struct ssdnet_link *) * np->nrows);
+    for (int i = 0; i < np->nrows; i++) {
+        ssd->link[i] = g_malloc0(sizeof(struct ssdnet_link) * np->ncols);
+    }
 }
 
 void ssd_init(FemuCtrl *n) {
@@ -353,6 +363,9 @@ void ssd_init(FemuCtrl *n) {
     for (int i = 0; i < spp->nchs; i++) {
         ssd_init_ch(&ssd->ch[i], spp);
     }
+
+    /* initialize ssdnet link */
+    ssdnet_init_link(ssd);
 
     /* initialize maptbl */
     ssd_init_maptbl(ssd);
@@ -421,6 +434,8 @@ static inline struct nand_page *get_pg(struct ssd *ssd, struct ppa *ppa) {
     return &(blk->pg[ppa->g.pg]);
 }
 
+#ifdef SSD_LINK
+
 static inline bool is_right_link_free(int rt_stime, struct ssdnet_link **link, struct ssdnet_params *np, int x, int y) {
     if (y == np->ncols - 1) {
         return false;
@@ -434,7 +449,7 @@ static inline bool is_left_link_free(int rt_stime, struct ssdnet_link **link, st
         return false;
     }
 
-    return (link[x][y].next_link_avail_time < rt_stime);
+    return (link[x][y - 1].next_link_avail_time < rt_stime);
 }
 
 static inline bool is_up_link_free(int rt_stime, struct ssdnet_link **link, struct ssdnet_params *np, int x, int y) {
@@ -461,7 +476,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
     //
     int diff_x = ex - sx;
     int diff_y = ey - sy;
-    int64_t rt_lat = 1;  // total latency caused by routing of current chip.
+    int64_t rt_lat = 0;  // total latency caused by routing of current chip.
     int64_t lat;         // latency caused by single direction's routing of current chip.
     bool is_right_searched, is_left_searched, is_up_searched, is_down_searched;
     bool found = false;
@@ -485,7 +500,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
         // block the input link
         link[sx][sy + 1].next_link_avail_time = UINT64_MAX;
 
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx + 1, sy, ex, ey);
+        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy + 1, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
@@ -500,7 +515,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
 
     if (diff_x < 0 && is_left_link_free(rt_stime, link, np, sx, sy)) {
         link[sx][sy].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx - 1, sy, ex, ey);
+        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy - 1, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
@@ -515,7 +530,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
 
     if (diff_y > 0 && is_up_link_free(rt_stime, link, np, sx, sy)) {
         link[sx - 1][sy].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy - 1, ex, ey);
+        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx - 1, sy, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
@@ -530,7 +545,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
 
     if (diff_y < 0 && is_down_link_free(rt_stime, link, np, sx, sy)) {
         link[sx + 1][sy].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy + 1, ex, ey);
+        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx + 1, sy, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
@@ -547,7 +562,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
     // no-minimal path
     if (is_down_link_free(rt_stime, link, np, sx, sy) && !is_down_searched) {
         link[sx + 1][sy].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy + 1, ex, ey);
+        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx + 1, sy, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
@@ -561,7 +576,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
 
     if (is_up_link_free(rt_stime, link, np, sx, sy) && !is_up_searched) {
         link[sx - 1][sy].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy - 1, ex, ey);
+        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx - 1, sy, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
@@ -575,7 +590,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
 
     if (is_left_link_free(rt_stime, link, np, sx, sy) && !is_left_searched) {
         link[sx][sy].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx - 1, sy, ex, ey);
+        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy - 1, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
@@ -589,7 +604,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
 
     if (is_right_link_free(rt_stime, link, np, sx, sy) && !is_right_searched) {
         link[sx][sy + 1].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx + 1, sy, ex, ey);
+        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy + 1, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
@@ -612,7 +627,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
 // if the destination chip is not available, return nagative value.
 static int64_t get_route(uint64_t ch, uint64_t rt_stime, struct ssd *ssd, struct ppa *ppa, struct nand_cmd *ncmd) {
     int c = ncmd->cmd;
-    int sx=0, sy=0, ex=0, ey=0;
+    int sx = 0, sy = 0, ex = 0, ey = 0;
     int64_t lat;
 
     switch (c) {
@@ -626,6 +641,7 @@ static int64_t get_route(uint64_t ch, uint64_t rt_stime, struct ssd *ssd, struct
         break;
 
     case NAND_WRITE:
+        // direction: ppa <- channel
         sx = ch;
         sy = 0;
         ex = ppa->g.ch;
@@ -646,22 +662,28 @@ static int64_t get_route(uint64_t ch, uint64_t rt_stime, struct ssd *ssd, struct
     }
 }
 
+#endif
+
 static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand_cmd *ncmd) {
     int c = ncmd->cmd;
     uint64_t cmd_stime = (ncmd->stime == 0) ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : ncmd->stime;
-    uint64_t nand_stime = -1;
-    uint64_t chnl_stime = -1;
-    uint64_t chnl_etime = -1;
-    uint64_t rt_stime;
     struct ssdparams *spp = &ssd->sp;
     struct nand_lun *lun = get_lun(ssd, ppa);
+    uint64_t nand_stime = -1;
+    uint64_t lat = 0;
+    uint64_t chnl_stime = -1;
     struct ssd_channel *ch = get_ch(ssd, ppa);
+#ifdef SSD_LINK
+    uint64_t rt_stime;
+    uint64_t chnl_etime = -1;
     int src_nchnl;  // # of source channel of the link route
     struct ssd_channel *src_chnl;
     int lp_nchnl;
     bool is_rt_found = false;
-    uint64_t lat = 0;
     int64_t rt_lat;
+    int earliest_free_ch;
+    uint64_t earliest_free_ch_avail_time;
+#endif
 
     switch (c) {
     case NAND_READ:
@@ -670,7 +692,7 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
         lun->next_lun_avail_time = nand_stime + spp->pg_rd_lat;
         lat = lun->next_lun_avail_time - cmd_stime;
 
-        // #if 0
+#ifdef SSD_LINK
         chnl_stime = lun->next_lun_avail_time;
         while (!is_rt_found) {
             /* read: then data transfer through channel */
@@ -685,10 +707,15 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
                 src_nchnl = -1;
 
                 // search a nearest free channel in two directions.
+                // if not found, wait until the earliest-free chanel available.
+                earliest_free_ch_avail_time = UINT64_MAX;
                 for (lp_nchnl = ppa->g.ch + 1; lp_nchnl < ssd->sp.nchs; lp_nchnl++) {
-                    if (ssd->ch[lp_nchnl].next_ch_avail_time < chnl_stime) {
+                    if (ssd->ch[lp_nchnl].next_ch_avail_time <= chnl_stime) {
                         src_nchnl = lp_nchnl;
                         break;
+                    } else if (ssd->ch[lp_nchnl].next_ch_avail_time < earliest_free_ch_avail_time) {
+                        earliest_free_ch_avail_time = ssd->ch[lp_nchnl].next_ch_avail_time;
+                        earliest_free_ch = lp_nchnl;
                     }
                 }
 
@@ -696,9 +723,12 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
                     if (src_nchnl != -1 && (ppa->g.ch - lp_nchnl >= src_nchnl - ppa->g.ch)) {
                         break;
                     }
-                    if (ssd->ch[lp_nchnl].next_ch_avail_time < chnl_stime) {
+                    if (ssd->ch[lp_nchnl].next_ch_avail_time <= chnl_stime) {
                         src_nchnl = lp_nchnl;
                         break;
+                    } else if (ssd->ch[lp_nchnl].next_ch_avail_time < earliest_free_ch_avail_time) {
+                        earliest_free_ch_avail_time = ssd->ch[lp_nchnl].next_ch_avail_time;
+                        earliest_free_ch = lp_nchnl;
                     }
                 }
 
@@ -717,14 +747,27 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
 
                     chnl_etime = src_chnl->next_ch_avail_time;
                 } else {
+                    // if all channels are busy,
+                    // wait until earliest-free channel available.
                     is_rt_found = false;
+                    chnl_etime = earliest_free_ch_avail_time;
                 }
             }
             chnl_stime = chnl_etime;
         }
 
         lat = chnl_etime - cmd_stime;
-        // #endif
+
+#else
+        lun->next_lun_avail_time = nand_stime + spp->pg_rd_lat;
+
+        /* read: then data transfer through channel */
+        chnl_stime = (ch->next_ch_avail_time < lun->next_lun_avail_time) ? lun->next_lun_avail_time : ch->next_ch_avail_time;
+        ch->next_ch_avail_time = chnl_stime + spp->ch_xfer_lat;
+
+        lat = ch->next_ch_avail_time - cmd_stime;
+
+#endif
         break;
 
     case NAND_WRITE:
@@ -736,7 +779,7 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
         }
         lat = lun->next_lun_avail_time - cmd_stime;
 
-        // #if 0
+#ifdef SSD_LINK
         /* write: transfer data through channel first */
         chnl_stime = cmd_stime;
         while (!is_rt_found) {
@@ -794,7 +837,19 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
         lun->next_lun_avail_time = nand_stime + spp->pg_wr_lat;
 
         lat = lun->next_lun_avail_time - cmd_stime;
-        // #endif
+
+#else
+
+        chnl_stime = (ch->next_ch_avail_time < cmd_stime) ? cmd_stime : ch->next_ch_avail_time;
+        ch->next_ch_avail_time = chnl_stime + spp->ch_xfer_lat;
+
+        /* write: then do NAND program */
+        nand_stime = (lun->next_lun_avail_time < ch->next_ch_avail_time) ? ch->next_ch_avail_time : lun->next_lun_avail_time;
+        lun->next_lun_avail_time = nand_stime + spp->pg_wr_lat;
+
+        lat = lun->next_lun_avail_time - cmd_stime;
+
+#endif
         break;
 
     case NAND_ERASE:
