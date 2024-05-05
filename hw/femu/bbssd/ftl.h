@@ -18,7 +18,7 @@ enum {
 };
 
 enum {
-    ssdnet_LINK_XFER_LATENCY = 0,
+    SSDNET_LINK_XFER_LATENCY = 0,
 };
 
 enum {

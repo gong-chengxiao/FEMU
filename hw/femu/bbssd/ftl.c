@@ -1,6 +1,6 @@
 #include "ftl.h"
 
-// #define FEMU_DEBUG_FTL
+#define FEMU_DEBUG_FTL
 #define SSD_LINK
 
 static void *ftl_thread(void *arg);
@@ -476,7 +476,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
     //
     int diff_x = ex - sx;
     int diff_y = ey - sy;
-    int64_t rt_lat = 0;  // total latency caused by routing of current chip.
+    int64_t rt_lat = 1;  // total latency caused by routing of current chip.
     int64_t lat;         // latency caused by single direction's routing of current chip.
     bool is_right_searched, is_left_searched, is_up_searched, is_down_searched;
     bool found = false;
@@ -504,7 +504,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
-            link[sx][sy + 1].next_link_avail_time = rt_stime + lat;
+            link[sx][sy + 1].next_link_avail_time = rt_stime + lat - 1;
         } else {
             found = false;
             rt_lat -= lat;
@@ -513,13 +513,13 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
         is_right_searched = true;
     }
 
-    if (diff_x < 0 && is_left_link_free(rt_stime, link, np, sx, sy)) {
+    if (!found && diff_x < 0 && is_left_link_free(rt_stime, link, np, sx, sy)) {
         link[sx][sy].next_link_avail_time = UINT64_MAX;
         lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy - 1, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
-            link[sx][sy].next_link_avail_time = rt_stime + lat;
+            link[sx][sy].next_link_avail_time = rt_stime + lat - 1;
         } else {
             found = false;
             rt_lat -= lat;
@@ -528,13 +528,13 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
         is_left_searched = true;
     }
 
-    if (diff_y > 0 && is_up_link_free(rt_stime, link, np, sx, sy)) {
+    if (!found && diff_y > 0 && is_up_link_free(rt_stime, link, np, sx, sy)) {
         link[sx - 1][sy].next_link_avail_time = UINT64_MAX;
         lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx - 1, sy, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
-            link[sx - 1][sy].next_link_avail_time = rt_stime + lat;
+            link[sx - 1][sy].next_link_avail_time = rt_stime + lat - 1;
         } else {
             found = false;
             rt_lat -= lat;
@@ -543,13 +543,13 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
         is_up_searched = true;
     }
 
-    if (diff_y < 0 && is_down_link_free(rt_stime, link, np, sx, sy)) {
+    if (!found && diff_y < 0 && is_down_link_free(rt_stime, link, np, sx, sy)) {
         link[sx + 1][sy].next_link_avail_time = UINT64_MAX;
         lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx + 1, sy, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
-            link[sx + 1][sy].next_link_avail_time = rt_stime + lat;
+            link[sx + 1][sy].next_link_avail_time = rt_stime + lat - 1;
         } else {
             found = false;
             rt_lat -= lat;
@@ -560,13 +560,13 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
 
     //
     // no-minimal path
-    if (is_down_link_free(rt_stime, link, np, sx, sy) && !is_down_searched) {
+    if (!found && is_down_link_free(rt_stime, link, np, sx, sy) && !is_down_searched) {
         link[sx + 1][sy].next_link_avail_time = UINT64_MAX;
         lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx + 1, sy, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
-            link[sx + 1][sy].next_link_avail_time = rt_stime + lat;
+            link[sx + 1][sy].next_link_avail_time = rt_stime + lat - 1;
         } else {
             found = false;
             rt_lat -= lat;
@@ -574,13 +574,13 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
         }
     }
 
-    if (is_up_link_free(rt_stime, link, np, sx, sy) && !is_up_searched) {
+    if (!found && is_up_link_free(rt_stime, link, np, sx, sy) && !is_up_searched) {
         link[sx - 1][sy].next_link_avail_time = UINT64_MAX;
         lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx - 1, sy, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
-            link[sx - 1][sy].next_link_avail_time = rt_stime + lat;
+            link[sx - 1][sy].next_link_avail_time = rt_stime + lat - 1;
         } else {
             found = false;
             rt_lat -= lat;
@@ -588,13 +588,13 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
         }
     }
 
-    if (is_left_link_free(rt_stime, link, np, sx, sy) && !is_left_searched) {
+    if (!found && is_left_link_free(rt_stime, link, np, sx, sy) && !is_left_searched) {
         link[sx][sy].next_link_avail_time = UINT64_MAX;
         lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy - 1, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
-            link[sx][sy].next_link_avail_time = rt_stime + lat;
+            link[sx][sy].next_link_avail_time = rt_stime + lat - 1;
         } else {
             found = false;
             rt_lat -= lat;
@@ -602,13 +602,13 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
         }
     }
 
-    if (is_right_link_free(rt_stime, link, np, sx, sy) && !is_right_searched) {
+    if (!found && is_right_link_free(rt_stime, link, np, sx, sy) && !is_right_searched) {
         link[sx][sy + 1].next_link_avail_time = UINT64_MAX;
         lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy + 1, ex, ey);
         if (lat >= 0) {
             found = true;
             rt_lat += lat;
-            link[sx][sy + 1].next_link_avail_time = rt_stime + lat;
+            link[sx][sy + 1].next_link_avail_time = rt_stime + lat - 1;
         } else {
             found = false;
             rt_lat -= lat;
@@ -617,7 +617,7 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
     }
 
     if (found) {
-        return rt_lat;
+        return rt_lat - 1;
     } else {
         return -rt_lat;
     }
@@ -681,7 +681,6 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
     int lp_nchnl;
     bool is_rt_found = false;
     int64_t rt_lat;
-    int earliest_free_ch;
     uint64_t earliest_free_ch_avail_time;
 #endif
 
@@ -715,7 +714,6 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
                         break;
                     } else if (ssd->ch[lp_nchnl].next_ch_avail_time < earliest_free_ch_avail_time) {
                         earliest_free_ch_avail_time = ssd->ch[lp_nchnl].next_ch_avail_time;
-                        earliest_free_ch = lp_nchnl;
                     }
                 }
 
@@ -728,7 +726,6 @@ static uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa, struct nand
                         break;
                     } else if (ssd->ch[lp_nchnl].next_ch_avail_time < earliest_free_ch_avail_time) {
                         earliest_free_ch_avail_time = ssd->ch[lp_nchnl].next_ch_avail_time;
-                        earliest_free_ch = lp_nchnl;
                     }
                 }
 
