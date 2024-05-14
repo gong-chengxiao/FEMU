@@ -335,8 +335,8 @@ static void ssd_init_rmap(struct ssd *ssd) {
 
 static void ssdnet_init_params(struct ssdnet_params *np, FemuCtrl *n) {
     np->link_xfer_lat = n->bb_params.ssdnet_link_xfer_lat;
-    np->ncols = n->bb_params.luns_per_ch;
-    np->nrows = n->bb_params.nchs;
+    np->ncols = n->bb_params.luns_per_ch + 1;
+    np->nrows = n->bb_params.nchs * 2 - 1;
 }
 
 static void ssdnet_init_link(struct ssd *ssd) {
@@ -441,7 +441,7 @@ static inline bool is_right_link_free(int rt_stime, struct ssdnet_link **link, s
         return false;
     }
 
-    return (link[x][y + 1].next_link_avail_time < rt_stime);
+    return (link[x * 2][y].next_link_avail_time < rt_stime);
 }
 
 static inline bool is_left_link_free(int rt_stime, struct ssdnet_link **link, struct ssdnet_params *np, int x, int y) {
@@ -449,7 +449,7 @@ static inline bool is_left_link_free(int rt_stime, struct ssdnet_link **link, st
         return false;
     }
 
-    return (link[x][y - 1].next_link_avail_time < rt_stime);
+    return (link[x * 2][y - 1].next_link_avail_time < rt_stime);
 }
 
 static inline bool is_up_link_free(int rt_stime, struct ssdnet_link **link, struct ssdnet_params *np, int x, int y) {
@@ -457,27 +457,28 @@ static inline bool is_up_link_free(int rt_stime, struct ssdnet_link **link, stru
         return false;
     }
 
-    return (link[x - 1][y].next_link_avail_time < rt_stime);
+    return (link[2 * x - 1][y].next_link_avail_time < rt_stime);
 }
 
 static inline bool is_down_link_free(int rt_stime, struct ssdnet_link **link, struct ssdnet_params *np, int x, int y) {
-    if (x == np->nrows - 1) {
+    if (2 * x == np->nrows - 1) {
         return false;
     }
 
-    return (link[x + 1][y].next_link_avail_time < rt_stime);
+    return (link[2 * x + 1][y].next_link_avail_time < rt_stime);
 }
 
-// @return the total latency of the route.
-// if the destination chip is not available, return nagative value MINUS ONE.
+// @return the end time of the route.
+// if the destination chip is not available, return nagative value.
+// if not available , max return is -1 in case of
+// both rt_stime and link_xfer_lat are 0.
 static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct ssdnet_params *np, int sx, int sy, int ex, int ey) {
     //
     // start a DSF to find a route.
     //
     int diff_x = ex - sx;
     int diff_y = ey - sy;
-    int64_t rt_lat = 1;  // total latency caused by routing of current chip.
-    int64_t lat;         // latency caused by single direction's routing of current chip.
+    int64_t rt_etime = 0;
     bool is_right_searched, is_left_searched, is_up_searched, is_down_searched;
     bool found = false;
 
@@ -496,64 +497,70 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
 
     //
     // minimal path
-    if (diff_x > 0 && is_right_link_free(rt_stime, link, np, sx, sy)) {
+    if (diff_y > 0 && is_right_link_free(rt_stime, link, np, sx, sy)) {
         // block the input link
-        link[sx][sy + 1].next_link_avail_time = UINT64_MAX;
+        link[sx * 2][sy].next_link_avail_time = UINT64_MAX;
 
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy + 1, ex, ey);
-        if (lat >= 0) {
+        rt_etime = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy + 1, ex, ey);
+        if (rt_etime >= 0) {
             found = true;
-            rt_lat += lat;
-            link[sx][sy + 1].next_link_avail_time = rt_stime + lat - 1;
+            link[sx * 2][sy].next_link_avail_time = rt_etime;
         } else {
             found = false;
-            rt_lat -= lat;
-            link[sx][sy + 1].next_link_avail_time = rt_stime - lat - 1;
+            link[sx * 2][sy].next_link_avail_time = -rt_etime;
+            // search continues, time accrues.
+            rt_stime = -rt_etime;
         }
         is_right_searched = true;
     }
 
-    if (!found && diff_x < 0 && is_left_link_free(rt_stime, link, np, sx, sy)) {
-        link[sx][sy].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy - 1, ex, ey);
-        if (lat >= 0) {
+    if (!found && diff_y < 0 && is_left_link_free(rt_stime, link, np, sx, sy)) {
+        link[2 * sx][sy - 1].next_link_avail_time = UINT64_MAX;
+        rt_etime = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy - 1, ex, ey);
+        if (rt_etime >= 0) {
             found = true;
-            rt_lat += lat;
-            link[sx][sy].next_link_avail_time = rt_stime + lat - 1;
+            link[2 * sx][sy - 1].next_link_avail_time = rt_etime;
         } else {
             found = false;
-            rt_lat -= lat;
-            link[sx][sy].next_link_avail_time = rt_stime - lat - 1;
+            link[2 * sx][sy - 1].next_link_avail_time = -rt_etime;
+            // search continues, time accrues.
+            rt_stime = -rt_etime;
         }
         is_left_searched = true;
     }
 
-    if (!found && diff_y > 0 && is_up_link_free(rt_stime, link, np, sx, sy)) {
-        link[sx - 1][sy].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx - 1, sy, ex, ey);
-        if (lat >= 0) {
+    if (!found && diff_x < 0 && is_up_link_free(rt_stime, link, np, sx, sy)) {
+        link[2 * sx - 1][sy].next_link_avail_time = UINT64_MAX;
+        rt_etime = search_route(rt_stime + np->link_xfer_lat, link, np, sx - 1, sy, ex, ey);
+        if (rt_etime >= 0) {
             found = true;
-            rt_lat += lat;
-            link[sx - 1][sy].next_link_avail_time = rt_stime + lat - 1;
+
+            link[2 * sx - 1][sy].next_link_avail_time = rt_etime;
         } else {
             found = false;
-            rt_lat -= lat;
-            link[sx - 1][sy].next_link_avail_time = rt_stime - lat - 1;
+
+            link[2 * sx - 1][sy].next_link_avail_time = -rt_etime;
+
+            // search continues, time accrues.
+            rt_stime = -rt_etime;
         }
         is_up_searched = true;
     }
 
-    if (!found && diff_y < 0 && is_down_link_free(rt_stime, link, np, sx, sy)) {
-        link[sx + 1][sy].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx + 1, sy, ex, ey);
-        if (lat >= 0) {
+    if (!found && diff_x > 0 && is_down_link_free(rt_stime, link, np, sx, sy)) {
+        link[2 * sx + 1][sy].next_link_avail_time = UINT64_MAX;
+        rt_etime = search_route(rt_stime + np->link_xfer_lat, link, np, sx + 1, sy, ex, ey);
+        if (rt_etime >= 0) {
             found = true;
-            rt_lat += lat;
-            link[sx + 1][sy].next_link_avail_time = rt_stime + lat - 1;
+
+            link[2 * sx + 1][sy].next_link_avail_time = rt_etime;
         } else {
             found = false;
-            rt_lat -= lat;
-            link[sx + 1][sy].next_link_avail_time = rt_stime - lat - 1;
+
+            link[2 * sx + 1][sy].next_link_avail_time = -rt_etime;
+
+            // search continues, time accrues.
+            rt_stime = -rt_etime;
         }
         is_down_searched = true;
     }
@@ -561,65 +568,81 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
     //
     // no-minimal path
     if (!found && is_down_link_free(rt_stime, link, np, sx, sy) && !is_down_searched) {
-        link[sx + 1][sy].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx + 1, sy, ex, ey);
-        if (lat >= 0) {
+        link[2 * sx + 1][sy].next_link_avail_time = UINT64_MAX;
+        rt_etime = search_route(rt_stime + np->link_xfer_lat, link, np, sx + 1, sy, ex, ey);
+        if (rt_etime >= 0) {
             found = true;
-            rt_lat += lat;
-            link[sx + 1][sy].next_link_avail_time = rt_stime + lat - 1;
+
+            link[2 * sx + 1][sy].next_link_avail_time = rt_etime;
         } else {
             found = false;
-            rt_lat -= lat;
-            link[sx + 1][sy].next_link_avail_time = rt_stime - lat - 1;
+
+            link[2 * sx + 1][sy].next_link_avail_time = -rt_etime;
+
+            // search continues, time accrues.
+            rt_stime = -rt_etime;
         }
     }
 
     if (!found && is_up_link_free(rt_stime, link, np, sx, sy) && !is_up_searched) {
-        link[sx - 1][sy].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx - 1, sy, ex, ey);
-        if (lat >= 0) {
+        link[2 * sx - 1][sy].next_link_avail_time = UINT64_MAX;
+        rt_etime = search_route(rt_stime + np->link_xfer_lat, link, np, sx - 1, sy, ex, ey);
+        if (rt_etime >= 0) {
             found = true;
-            rt_lat += lat;
-            link[sx - 1][sy].next_link_avail_time = rt_stime + lat - 1;
+
+            link[2 * sx - 1][sy].next_link_avail_time = rt_etime;
         } else {
             found = false;
-            rt_lat -= lat;
-            link[sx - 1][sy].next_link_avail_time = rt_stime - lat - 1;
+
+            link[2 * sx - 1][sy].next_link_avail_time = -rt_etime;
+
+            // search continues, time accrues.
+            rt_stime = -rt_etime;
         }
     }
 
     if (!found && is_left_link_free(rt_stime, link, np, sx, sy) && !is_left_searched) {
-        link[sx][sy].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy - 1, ex, ey);
-        if (lat >= 0) {
+        link[2 * sx][sy - 1].next_link_avail_time = UINT64_MAX;
+        rt_etime = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy - 1, ex, ey);
+        if (rt_etime >= 0) {
             found = true;
-            rt_lat += lat;
-            link[sx][sy].next_link_avail_time = rt_stime + lat - 1;
+
+            link[2 * sx][sy - 1].next_link_avail_time = rt_etime;
         } else {
             found = false;
-            rt_lat -= lat;
-            link[sx][sy].next_link_avail_time = rt_stime - lat - 1;
+
+            link[2 * sx][sy - 1].next_link_avail_time = -rt_etime;
+
+            // search continues, time accrues.
+            rt_stime = -rt_etime;
         }
     }
 
     if (!found && is_right_link_free(rt_stime, link, np, sx, sy) && !is_right_searched) {
         link[sx][sy + 1].next_link_avail_time = UINT64_MAX;
-        lat = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy + 1, ex, ey);
-        if (lat >= 0) {
+        rt_etime = search_route(rt_stime + np->link_xfer_lat, link, np, sx, sy + 1, ex, ey);
+        if (rt_etime >= 0) {
             found = true;
-            rt_lat += lat;
-            link[sx][sy + 1].next_link_avail_time = rt_stime + lat - 1;
+
+            link[sx][sy + 1].next_link_avail_time = rt_etime;
         } else {
             found = false;
-            rt_lat -= lat;
-            link[sx][sy + 1].next_link_avail_time = rt_stime - lat - 1;
+
+            link[sx][sy + 1].next_link_avail_time = -rt_etime;
+
+            // search continues, time accrues.
+            rt_stime = -rt_etime;
         }
     }
 
     if (found) {
-        return rt_lat - 1;
+        return rt_etime;
     } else {
-        return -rt_lat;
+        if (rt_etime == 0) {
+            return -rt_stime;
+        } else {
+            return -rt_etime;
+        }
     }
 }
 
@@ -628,13 +651,13 @@ static int64_t search_route(uint64_t rt_stime, struct ssdnet_link **link, struct
 static int64_t get_route(uint64_t ch, uint64_t rt_stime, struct ssd *ssd, struct ppa *ppa, struct nand_cmd *ncmd) {
     int c = ncmd->cmd;
     int sx = 0, sy = 0, ex = 0, ey = 0;
-    int64_t lat;
+    int64_t rt_etime = 0;
 
     switch (c) {
     case NAND_READ:
         // direction: channel <- ppa
         sx = ppa->g.ch;
-        sy = ppa->g.lun;
+        sy = ppa->g.lun + 1;
         ex = ch;
         ey = 0;
 
@@ -645,7 +668,7 @@ static int64_t get_route(uint64_t ch, uint64_t rt_stime, struct ssd *ssd, struct
         sx = ch;
         sy = 0;
         ex = ppa->g.ch;
-        ey = ppa->g.lun;
+        ey = ppa->g.lun + 1;
 
         break;
 
@@ -653,12 +676,14 @@ static int64_t get_route(uint64_t ch, uint64_t rt_stime, struct ssd *ssd, struct
         ftl_err("Unsupported NAND command: 0x%x\n", c);
     }
 
-    lat = search_route(rt_stime, ssd->link, &ssd->np, sx, sy, ex, ey);
+    rt_etime = search_route(rt_stime, ssd->link, &ssd->np, sx, sy, ex, ey);
 
-    if (lat < 0) {
-        return lat + 1;
+    if (rt_etime >= 0) {
+        assert(rt_etime >= rt_stime);
+        return rt_etime - rt_stime;
     } else {
-        return lat;
+        assert(rt_etime + rt_stime <= 0);
+        return rt_etime + rt_stime;
     }
 }
 

@@ -111,8 +111,20 @@ struct ssdnet_link
 };
 
 struct ssdnet_params {
-    int nrows;  // nrows = nch
+    int nrows;  // nrows = nch*2 - 1
     int ncols;  // nclos = luns_per_ch (0 is a virtual link col which connect chnnel controller to the first chip).
+
+    // link graph
+    //                      [m-1,n]
+    //                         |
+    //                     (2m-1,n)
+    //                         |
+    //      [m,n-1]-(2m,n-1)-[m,n]-(2m,n)-[m,n+1]
+    //                         |
+    //                     (2m+1,n)
+    //                         |
+    //                      [m+1,n]
+
     int link_xfer_lat;
 };
 
